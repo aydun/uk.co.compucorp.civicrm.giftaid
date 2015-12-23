@@ -33,8 +33,6 @@
  * $Id$
  *
  */
-require_once 'CRM/Report/Form.php';
-require_once 'CRM/Civigiftaid/Utils/Contribution.php';
 
 class CRM_Civigiftaid_Report_Form_Contribute_GiftAid extends CRM_Report_Form {
 
@@ -55,6 +53,30 @@ class CRM_Civigiftaid_Report_Form_Contribute_GiftAid extends CRM_Report_Form {
               ),
             ),
           ),
+          'civicrm_contact' =>
+            array(
+              'dao' => 'CRM_Contact_DAO_Contact',
+              'grouping' => 'contact-fields',
+              'fields' => array(
+                'prefix_id' =>array( 'default' => TRUE ),
+                'first_name' =>array( 'default' => TRUE ),
+                'last_name' =>array( 'default' => TRUE ),
+                'display_name' =>array( 'title' => 'Name of Donor' ),
+              ),
+            ),
+          'civicrm_address' =>
+            array(
+              'dao' => 'CRM_Core_DAO_Address',
+              'grouping' => 'contact-fields',
+              'fields' =>
+              array(
+                'street_address' => array('default' => TRUE),
+                'city' => NULL,
+                'state_province_id' => array('title' => ts('State/Province'),),
+                'country_id' => array('title' => ts('Country'),),
+                'postal_code' => array('default' => TRUE),
+              ),
+            ),
           'civicrm_contribution' =>
             array(
               'dao' => 'CRM_Contribute_DAO_Contribution',
@@ -67,31 +89,25 @@ class CRM_Civigiftaid_Report_Form_Contribute_GiftAid extends CRM_Report_Form {
                 ),
                 'contact_id' => array(
                   'name' => 'contact_id',
-                  'title'  => 'Name of Donor',
-                  'no_display' => false,
+                  'title'  => 'Contact ID',
+                  'no_display' => TRUE,
                   'required'   => true,
                 ),
                 'receive_date' => array(
                   'name'  => 'receive_date',
                   'title'      => 'Contribution Date',
                   'no_display' => false,
-                  'required'   => true,
+                  'default'   => TRUE,
                 ),
               ),
             ),
-          'civicrm_address' =>
-            array(
-              'dao' => 'CRM_Core_DAO_Address',
-              'grouping' => 'contact-fields',
-              'fields' =>
-              array(
-                'street_address' => NULL,
-                'city' => NULL,
-                'state_province_id' => array('title' => ts('State/Province'),),
-                'country_id' => array('title' => ts('Country'),),
-                'postal_code' => NULL,
-              ),
-            ),
+        );
+
+        $this->_options=array(
+          'hmrc_format' => array(
+            'title' => ts('Format for HMRC spreadsheet?'),
+            'type' => 'checkbox'
+          ),
         );
 
         parent::__construct( );
@@ -99,7 +115,9 @@ class CRM_Civigiftaid_Report_Form_Contribute_GiftAid extends CRM_Report_Form {
         // set defaults
         if ( is_array( $this->_columns['civicrm_value_gift_aid_submission'] ) ) {
             foreach ( $this->_columns['civicrm_value_gift_aid_submission']['fields'] as $field => $values ) {
-                $this->_columns['civicrm_value_gift_aid_submission']['fields'][$field]['default'] = true;
+                if ($values['name']  == 'amount') {
+	            $this->_columns['civicrm_value_gift_aid_submission']['fields'][$field]['default'] = true;
+                }
             }
         }
     }
@@ -165,6 +183,11 @@ class CRM_Civigiftaid_Report_Form_Contribute_GiftAid extends CRM_Report_Form {
                   ON {$this->_aliases['civicrm_entity_batch']}.entity_table = 'civicrm_contribution' AND
                      {$this->_aliases['civicrm_entity_batch']}.entity_id = {$this->_aliases['civicrm_contribution']}.id
 
+          LEFT JOIN civicrm_contact {$this->_aliases['civicrm_contact']}
+          ON ({$this->_aliases['civicrm_contribution']}.contact_id = {$this->_aliases['civicrm_contact']}.id
+             AND {$this->_aliases['civicrm_contact']}.is_deleted = 0 )
+
+
           LEFT JOIN civicrm_address {$this->_aliases['civicrm_address']}
           ON ({$this->_aliases['civicrm_contribution']}.contact_id = {$this->_aliases['civicrm_address']}.contact_id
              AND {$this->_aliases['civicrm_address']}.is_primary = 1 )";
@@ -207,28 +230,132 @@ class CRM_Civigiftaid_Report_Form_Contribute_GiftAid extends CRM_Report_Form {
 
     function alterDisplay( &$rows ) {
         // custom code to alter rows
-        $checkList  = array();
         $entryFound = false;
-        $display_flag = $prev_cid = $cid =  0;
-        require_once 'CRM/Contact/DAO/Contact.php';
+        $hmrc_format = array_key_exists('hmrc_format', $this->_params) && CRM_Utils_Array::value('hmrc_format', $this->_params);
+
+        $cols_added = FALSE;
+        if ($hmrc_format && !$cols_added) {
+           // add two blank columns before Contribution Date
+           // to make copy/paste from CSV into HMRC spreadsheet easier
+           $index = array_search( 'civicrm_contribution_receive_date', array_keys($this->_columnHeaders) );
+           $new_cols = array(
+             'aggregated' => array(
+               'title' => ts('Aggregated Donations'),
+             ),
+             'sponsored' => array(
+               'title' => ts('Sponsored event'),
+             ),
+           );
+           array_splice($this->_columnHeaders, $index, 0, $new_cols);
+           $cols_added = TRUE;
+        }
+        $donation_key = NULL;
         foreach ( $rows as $rowNum => $row ) {
-          // handle contribution status id
-            if ( array_key_exists('civicrm_contribution_contact_id', $row) ) {
+            if ( array_key_exists('civicrm_contribution_contact_id', $row) && array_key_exists('civicrm_contact_display_name', $row)) {
                 if ( $value = $row['civicrm_contribution_contact_id'] ) {
-                    $contact = new CRM_Contact_DAO_Contact( );
-                    $contact->id = $value;
-                    $contact->find(  true );
-                    $rows[$rowNum]['civicrm_contribution_contact_id'] = $contact->display_name;
                     $url = CRM_Utils_System::url( "civicrm/contact/view"  ,
                                             'reset=1&cid=' . $value,
                                             $this->_absoluteUrl );
-                    $rows[$rowNum]['civicrm_contribution_contact_id_link' ] = $url;
-                    $rows[$rowNum]['civicrm_contribution_contact_id_hover'] =
+                    $rows[$rowNum]['civicrm_contact_display_name_link' ] = $url;
+                    $rows[$rowNum]['civicrm_contact_display_name_hover'] =
                         ts("View Contact Summary for this Contact.");
                 }
                 $entryFound = true;
             }
 
+            if ( array_key_exists('civicrm_contact_prefix_id', $row) ) {
+              if ( $value = $row['civicrm_contact_prefix_id'] ) {
+                 $value = CRM_Core_Pseudoconstant::getLabel('CRM_Contact_BAO_Contact', 'prefix_id', $value);
+                 if ($hmrc_format) {
+                     // Limit prefix fo 4 chars
+                     $value = substr( $value, 0, 4 );
+                 }
+                 $rows[$rowNum]['civicrm_contact_prefix_id'] = $value;
+              }
+              $entryFound = true;
+            }
+            if ( array_key_exists('civicrm_address_country_id', $row) ) {
+              if ( $value = $row['civicrm_address_country_id'] ) {
+                 $rows[$rowNum]['civicrm_address_country_id'] = CRM_Core_PseudoConstant::country($value, FALSE);
+              }
+              $entryFound = true;
+            }
+            if ( array_key_exists('civicrm_address_state_province_id', $row) ) {
+              if ( $value = $row['civicrm_address_state_province_id'] ) {
+                 $rows[$rowNum]['civicrm_address_state_province_id'] = CRM_Core_PseudoConstant::stateProvince($value, FALSE);
+              }
+              $entryFound = true;
+            }
+
+            if ( $hmrc_format ) {
+              // See https://www.gov.uk/guidance/schedule-spreadsheet-to-claim-back-tax-on-gift-aid-donations
+              // First name is max 35 chars, no spaces
+              $key = 'civicrm_contact_first_name';
+              if ( array_key_exists($key, $row) ) {
+                 if ( $value = trim($row[$key]) ) {
+                     $value = explode(" ", $value, 2)[0];
+                     $rows[$rowNum][$key] = substr( $value, 0, 35 );
+                 }
+              }
+
+              // Last name is max 35 chars, replace hyphens with spaces
+              $key = 'civicrm_contact_last_name';
+              if ( array_key_exists($key, $row) ) {
+                 if ( $value = trim($row[$key]) ) {
+                     $value = str_replace('-', ' ', $value);
+                     $rows[$rowNum][$key] = substr( $value, 0, 35 );
+                 }
+              }
+
+              // Only show number if we can extract that
+              $key = 'civicrm_address_street_address';
+              if ( array_key_exists($key, $row) ) {
+                 if ( $value = $row[$key] ) {
+                     if (preg_match( '/^(\d+)/', $value, $matches) ) {
+                          $rows[$rowNum][$key] = $matches[1];
+                     }
+                 }
+              }
+
+              // Post code should be upper case
+              $key = 'civicrm_address_postal_code';
+              if ( array_key_exists($key, $row) ) {
+                 if ( $value = trim($row[$key]) ) {
+                     $rows[$rowNum][$key] = strtoupper($value);
+                 }
+              }
+
+              // Donation date is DD/MM/YY
+              // Format & override type to prevent further changes
+              $key = 'civicrm_contribution_receive_date';
+              if ( array_key_exists($key, $row) ) {
+                 if ( $value = $row[$key] ) {
+                     $value = CRM_Utils_Date::customFormat($value, '%d/%m/%Y');
+                     // customFormat doesn't understand %y for 2 digit years ...
+                     $value = substr( $value, 0, 6 ) . substr( $value, -2 );
+                     $rows[$rowNum][$key] = $value;
+                     $this->_columnHeaders[$key]['type'] = 2;
+                 }
+              }
+
+              // Donation amount should not have currency symbol
+              // Format & override type to prevent further changes
+              if ( !$donation_key ) {
+                 // Better way to find donation key ??
+                 foreach ($this->_columnHeaders as $k => $v) {
+                   if ($v['title'] == 'Amount') {
+                      $donation_key = $k;
+                   }
+                 }
+              }
+              if ( $donation_key && array_key_exists($donation_key, $row) ) {
+                 if ( $value = $row[$donation_key] ) {
+                     $rows[$rowNum][$donation_key] = sprintf("%01.2f", $value);
+                     $this->_columnHeaders[$donation_key]['type'] = 2;
+                 }
+              }
+              $entryFound = TRUE;
+            }
 
             // skip looking further in rows, if first row itself doesn't
             // have the column we need
@@ -240,5 +367,3 @@ class CRM_Civigiftaid_Report_Form_Contribute_GiftAid extends CRM_Report_Form {
     }
 
 }
-
-
