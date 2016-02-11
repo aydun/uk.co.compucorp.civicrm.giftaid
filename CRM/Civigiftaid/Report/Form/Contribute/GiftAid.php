@@ -249,6 +249,10 @@ class CRM_Civigiftaid_Report_Form_Contribute_GiftAid extends CRM_Report_Form {
            array_splice($this->_columnHeaders, $index, 0, $new_cols);
            $cols_added = TRUE;
         }
+        if ( array_key_exists('civicrm_contact_prefix_id', $this->_columnHeaders) ) {
+            // we change this from id to string
+            $this->_columnHeaders['civicrm_contact_prefix_id']['type'] = 2;
+        }
         $donation_key = NULL;
         foreach ( $rows as $rowNum => $row ) {
             if ( array_key_exists('civicrm_contribution_contact_id', $row) && array_key_exists('civicrm_contact_display_name', $row)) {
